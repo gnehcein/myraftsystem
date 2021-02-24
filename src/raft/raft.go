@@ -66,20 +66,20 @@ type bcflld struct {
 	term 	int
 }
 type Raft struct {
-	mu        		sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     		[]*labrpc.ClientEnd // RPC end points of all peers
-	persister 		*Persister          // Object to hold this peer's persisted state
-	me        		int                 // this peer's index into peers[]
-	dead      		int32               // set by Kill()
+	mu        		sync.Mutex          	// Lock to protect shared access to this peer's state
+	peers     		[]*labrpc.ClientEnd 	// RPC end points of all peers
+	persister 		*Persister          	// Object to hold this peer's persisted state
+	me        		int                 	// this peer's index into peers[]
+	dead      		int32               	// set by Kill()
 	term 	  		int
 	voteFor 		bool
-	commitindex     int
-	lastapplied 	[]int
+	commitindex     	int
+	lastapplied 		[]int
 	nextindex 		[]int
 	ident 			int
-	log				[]entrry
-	bcfollower		chan bcflld			//become follower or leader,
-	bcleader		chan bcflld			//两者共用
+	log			[]entrry
+	bcfollower		chan bcflld		//两者共用bcflld(become follower or leader),
+	bcleader		chan bcflld			
 	sendch			chan bool
 	applyCh 		chan ApplyMsg
 
@@ -98,11 +98,9 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-//
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
+
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	w := new(bytes.Buffer)
@@ -118,10 +116,8 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(data)
 }
 
-
-//
 // restore previously persisted state.
-//
+
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -138,12 +134,6 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
 // the types of the args and reply passed to Call() must be
 // the same as the types of the arguments declared in the
 // handler function (including whether they are pointers).
@@ -168,25 +158,12 @@ func (rf *Raft) readPersist(data []byte) {
 // the struct itself.
 //
 
-//
-// the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
-// check whether Kill() has been called. the use of atomic avoids the
-// need for a lock.
-//
-// the issue is that long-running goroutines use memory and may chew
-// up CPU time, perhaps causing later tests to fail and generating
-// confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
-//
-func (rf *Raft) Kill() {
+func (rf *Raft) Kill() {		//stop the service
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
 
 }
 
 func (rf *Raft) killed() bool {
-
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
@@ -204,7 +181,7 @@ func (rf *Raft) killed() bool {
 // term. the third return value is true if this server believes it is
 // the leader.
 //
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
+func (rf *Raft) Start(command interface{}) (int, int, bool) {	//生成一个新的entry
 	index := -1
 	term := -1
 
@@ -214,7 +191,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	isLeader := rf.ident==leader
 	if isLeader{
-		//for i:=0;i< len(rf.log);i++{
+		//for i:=0;i< len(rf.log);i++{		//another style
 		//	if rf.log[i].Command==command {
 		//		index=i
 		//		term=rf.log[i].Term
@@ -242,11 +219,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term			int
+	Term		int
 	Candidateid 	int
 	Lastlogindex	int
-	Lastlogterm		int
+	Lastlogterm	int
 }
 
 //
@@ -254,9 +230,8 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
 	Termcurrent 	int
-	Granted			bool
+	Granted		bool
 	Requestterm     int
 }
 
@@ -278,7 +253,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
 			rf.voteFor=true
 			reply.Termcurrent=rf.term
 			rf.persist()
-			rf.mu.Unlock()			//一定要记得先解锁，再传通道 锁和通道是死锁的唯二两个原因，在我写此项目中
+			rf.mu.Unlock()			//一定要记得先解锁，再传通道。在我写此项目中，锁和通道是死锁的唯二两个原因。
 			rf.bcfollower<-bcflld{args.Term}
 		}else {
 			reply.Granted=false
@@ -386,7 +361,7 @@ func (rf *Raft)Vote() {
 	}
 }
 type AppendEntries struct {
-	Id 			int
+	Id 		int
 	Term 		int
 	Prevlogi	int
 	Prevlogt	int
@@ -500,7 +475,7 @@ func  (rf *Raft)AE (i int) {
 	var reply	 	Appendreply
 	var newnext		int
 
-	if rf.lastapplied[i]>=0{
+	if rf.lastapplied[i]>=0{		//两种情况，一个已经达成一致，一个还在找一致的entry。
 		nexti=rf.lastapplied[i]+1
 	}else {
 		nexti=rf.nextindex[i]
@@ -711,13 +686,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.sendch=make(chan bool,100)
 	rf.applyCh=applyCh
 	rf.commitindex=0
-	// Your initialization code here (2A, 2B, 2C).
-	rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(persister.ReadRaftState())	// initialize from state persisted before a crash
 	if rf.log==nil{
 		rf.log= append(rf.log, entrry{0,nil})
 	}
 	go rf.Worker()
-	// initialize from state persisted before a crash
+	
 
 	return rf
 }
