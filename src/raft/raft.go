@@ -1,11 +1,10 @@
 package raft
-
-
 //
 // this is an outline of the API that raft must expose to
 // the service (or tester). see comments below for
 // each of these functions for more details.
-//
+// A Go object implementing a single Raft peer.
+
 // rf = Make(...)
 //   create a new Raft server.
 // rf.Start(command interface{}) (index, term, isleader)
@@ -35,20 +34,15 @@ const (
 	follower = 0
 	candidate= 1
 	leader   = 2
+	nilVote  =100000
 )
 
-
-//
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
 // CommandValid to true to indicate that the ApplyMsg contains a newly
 // committed log entry.
-//
-// in Lab 3 you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh; at that point you can add fields to
-// ApplyMsg, but set CommandValid to false for these other uses.
-//
+
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -59,57 +53,55 @@ type entrry struct {
 	Term			int
 	Command 		interface{}
 }
-//
-// A Go object implementing a single Raft peer.
-//
+
 type bcflld struct {
 	term 	int
 }
-type Raft struct {
-	mu        		sync.Mutex          	// Lock to protect shared access to this peer's state
-	peers     		[]*labrpc.ClientEnd 	// RPC end points of all peers
-	persister 		*Persister          	// Object to hold this peer's persisted state
-	me        		int                 	// this peer's index into peers[]
-	dead      		int32               	// set by Kill()
-	term 	  		int
-	voteFor 		bool
-	commitindex     	int
-	lastapplied 		[]int
-	nextindex 		[]int
-	ident 			int
-	log			[]entrry
-	bcfollower		chan bcflld		//两者共用bcflld(become follower or leader),
-	bcleader		chan bcflld			
-	sendch			chan bool
-	applyCh 		chan ApplyMsg
 
+type Raft struct {
+	mu          	sync.Mutex
+	peers       	[]*labrpc.ClientEnd // 各个节点的rpc-client
+	persister   	*Persister          // Object to hold this peer's persisted state
+	me          	int                 // this peer's index into peers[]
+	dead        	int32               // set by Kill()
+	term        	int
+	voteFor       	int
+	Commitindex   	int					//可以向状态机发送的最高日志的index
+	lastapplied   	[]int				//对leader有用，下面一个也是
+	nextindex     	[]int
+	Identity        int					//3种身份之一
+	Log           	[]entrry
+	bcfollower    	chan bcflld			//become follower or leader,
+	bcleader      	chan bcflld			//两者共用
+	sendch        	chan bool			//加快发送的信号
+	applyCh       	chan ApplyMsg		//向状态机传递已经被大多数节点保存的稳定entry
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
+
 func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
-	// Your code here (2A).
+	//fmt.Println("getstate")
 	rf.mu.Lock()
 	term=rf.term
-	isleader= rf.ident==leader
+	isleader= rf.Identity ==leader
 	rf.mu.Unlock()
 	return term, isleader
 }
 
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
+// see paper's Figure 2 for a description of what should be persistent.
 
 func (rf *Raft) persist() {
-	// Your code here (2C).
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	err1:=e.Encode(rf.log)
+	err1:=e.Encode(rf.Log)
 	err2:=e.Encode(rf.term)
-	err3:=e.Encode(rf.commitindex)
-	err4:=e.Encode(rf.voteFor)
-	if err1!=nil||err2!=nil||err3!=nil||err4!=nil{
+	err3:=e.Encode(rf.voteFor)
+	if err1!=nil||err2!=nil||err3!=nil{
 		fmt.Println(err1,err2)
 	}
 	data := w.Bytes()
@@ -122,18 +114,23 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
+
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	err1:=d.Decode(&rf.log)
+	err1:=d.Decode(&rf.Log)
 	err2:=d.Decode(&rf.term)
-	err3:=d.Decode(&rf.commitindex)
-	err4:=d.Decode(&rf.voteFor)
-	if err1!= nil||err2!=nil||err3!=nil||err4!=nil{
+	err3:=d.Decode(&rf.voteFor)
+	if err1!= nil||err2!=nil||err3!=nil{
 	  	fmt.Println("decode,err")
 	}
 }
 
+//
+// example code to send a RequestVote RPC to a server.
+// server is the index of the target server in rf.peers[].
+// expects RPC arguments in args.
+// fills in *reply with RPC reply, so caller should
+// pass &reply.
 // the types of the args and reply passed to Call() must be
 // the same as the types of the arguments declared in the
 // handler function (including whether they are pointers).
@@ -156,14 +153,23 @@ func (rf *Raft) readPersist(data []byte) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-//
 
-func (rf *Raft) Kill() {		//stop the service
+// the tester doesn't halt goroutines created by Raft after each test,
+// but it does call the Kill() method. your code can use killed() to
+// check whether Kill() has been called. the use of atomic avoids the
+// need for a lock.
+//
+// the issue is that long-running goroutines use memory and may chew
+// up CPU time, perhaps causing later tests to fail and generating
+// confusing debug output. any goroutine with a long-running loop
+// should call killed() to check whether it should stop.
+//
+func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 
 }
 
-func (rf *Raft) killed() bool {
+func (rf *Raft) Killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
@@ -181,17 +187,17 @@ func (rf *Raft) killed() bool {
 // term. the third return value is true if this server believes it is
 // the leader.
 //
-func (rf *Raft) Start(command interface{}) (int, int, bool) {	//生成一个新的entry
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-
-	if rf.killed(){
+	//fmt.Println("start")
+	if rf.Killed(){
 		return index,term,false
 	}
 	rf.mu.Lock()
-	isLeader := rf.ident==leader
+	isLeader := rf.Identity ==leader
 	if isLeader{
-		//for i:=0;i< len(rf.log);i++{		//another style
+		//for i:=0;i< len(rf.log);i++{
 		//	if rf.log[i].Command==command {
 		//		index=i
 		//		term=rf.log[i].Term
@@ -199,65 +205,83 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {	//生成一个新�
 		//		return index,term,isLeader
 		//	}
 		//}
-		index=len(rf.log)
+		index=len(rf.Log)
 		term=rf.term
 		en1:=entrry{term,command}
-		rf.log=append(rf.log,en1)
+		rf.Log =append(rf.Log,en1)
+		//fmt.Println(rf.me,index)		//这个print帮了我很大的忙
 		rf.persist()
-		if len(rf.sendch)<30{
+		if len(rf.sendch)<10{
 			rf.sendch<-true
 		}
 	}
 	rf.mu.Unlock()
-	// Your code here (2B).
+
 	return index, term, isLeader
 }
 
+type InstallArgs struct {
+	leaderTerm 		int
+	leaderId		int
+	lastIndex		int
+	lastTerm		int
+	offset 			int
+	data  			[]byte
+	done 			bool
+}
 
+type InstallReply struct {
+	term 			int
+}
+
+func (rf Raft)InstallSnapshot(args *InstallArgs,reply *InstallReply)  {
+
+}
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	Term		int
+	Term			int
 	Candidateid 	int
 	Lastlogindex	int
-	Lastlogterm	int
+	Lastlogterm		int
 }
 
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
 type RequestVoteReply struct {
 	Termcurrent 	int
-	Granted		bool
+	Granted			bool
 	Requestterm     int
+	Id  			int
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
-	if rf.killed() {
+	if rf.Killed() {
 		reply.Granted=false
 		reply.Termcurrent=-1
 		reply.Requestterm=args.Term
 		return
 	}
 	rf.mu.Lock()
-	if args.Term>rf.term||(args.Term==rf.term&&rf.ident==follower&&rf.voteFor==false){
-		cuindex:=len(rf.log)-1
-		cuterm:=rf.log[cuindex].Term
-		rf.ident=follower
+	//fmt.Println(rf.me,"Identity:",rf.Identity)
+	if args.Term>rf.term||(args.Term==rf.term&&rf.Identity ==follower&&rf.voteFor==nilVote){
+		cuindex:=len(rf.Log)-1
+		cuterm:=rf.Log[cuindex].Term
+		rf.Identity =follower
 		rf.term=args.Term
 		if args.Lastlogterm>cuterm||(args.Lastlogterm==cuterm&&args.Lastlogindex>=cuindex) {
 			reply.Granted=true
-			rf.voteFor=true
+			rf.voteFor=args.Candidateid
 			reply.Termcurrent=rf.term
 			rf.persist()
-			rf.mu.Unlock()			//一定要记得先解锁，再传通道。在我写此项目中，锁和通道是死锁的唯二两个原因。
+			rf.mu.Unlock()			//一定要记得先解锁，再传通道，锁和通道是死锁的唯二两个原因，在我写此项目中
+									//因为worker可能有未监听bcfollower通道的时候，处理完操作然后再占有锁才能继续监听bcfollower，
+									//如果恰好这时候被别的goroutine持有锁，并且直到向bcfollower传入消息后才解锁，
+									//这样worker会一直获取不到锁而等待，占有锁的goroutine也会一直卡在无缓冲的channel上，造成死结。
 			rf.bcfollower<-bcflld{args.Term}
 		}else {
 			reply.Granted=false
-			rf.voteFor=false		//因为如果是同term的follower，之前就是false，如果是term增加，也应该变成false
+			rf.voteFor=nilVote		//因为如果是同term的follower，之前就是nilVote，如果是term增加，也应该变成nilVote
 			reply.Termcurrent=rf.term
 			rf.persist()
 			rf.mu.Unlock()
@@ -265,37 +289,36 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
 	}else {
 		reply.Granted=false
 		reply.Termcurrent=rf.term
+		reply.Id=rf.voteFor
 		rf.mu.Unlock()
 	}
 
 	reply.Requestterm=args.Term
 }
 
+type voteup struct {
+	term 	int
+	id 		int
+}
 
 func (rf *Raft)Vote() {
-	up:=make(chan int)
-	vote:=make(chan int)
+	up:=make(chan voteup,len(rf.peers)-1)
+	vote:=make(chan int, len(rf.peers)-1)
 	ctx0:=context.Background()
 	ctx1,cancel:=context.WithCancel(ctx0)
 	defer cancel()
-	//t1:=time.Now()  	//用来查看goroutine的执行时间
-	//defer  func() {
-	//	t2:=time.Now()
-	//	fmt.Println(t2.Sub(t1),"vote")
-	//}()
 	var votenum int
-	var mu 		sync.Mutex
+	var mu 		sync.Mutex	//在子方法中读写数据时加锁
 	rf.mu.Lock()
-	if rf.ident!=candidate||rf.killed(){
+	if rf.Identity !=candidate||rf.Killed(){
 		rf.mu.Unlock()
 		return
 	}
-	fmt.Println(rf.term,"VoteTerm",rf.me)
 	n:=len(rf.peers)
 	me:=rf.me			//对数据进行拷贝，每个子函数生成RequestVoteArgs结构时不用对raft加锁并调用其数据
 	term1:=rf.term
-	lastlogi:=len(rf.log)-1
-	lastlogt:=rf.log[lastlogi].Term
+	lastlogi:=len(rf.Log)-1
+	lastlogt:=rf.Log[lastlogi].Term
 	rf.mu.Unlock()
 	for i:=0;i<n;i++{
 		if i==me{
@@ -325,7 +348,11 @@ func (rf *Raft)Vote() {
 			default:
 			}
 			if Voterpl.Termcurrent>term1  {
-				up<-Voterpl.Termcurrent
+				up1:=voteup{
+					term: Voterpl.Termcurrent,
+					id: Voterpl.Id,
+				}
+				up<-up1
 				return
 			}
 			if Voterpl.Granted{
@@ -337,14 +364,14 @@ func (rf *Raft)Vote() {
 		select {
 		case newterm:=<-up:
 			rf.mu.Lock()
-			if newterm>rf.term{
-				rf.term=newterm
-				rf.ident=follower
-				rf.voteFor=false
+			if newterm.term>rf.term{
+				rf.term=newterm.term
+				rf.Identity =follower
+				rf.voteFor=newterm.id
 				rf.persist()
 			}
 			rf.mu.Unlock()
-			rf.bcfollower<-bcflld{newterm}
+			rf.bcfollower<-bcflld{newterm.term}
 			return
 		case <-vote:
 			votenum++
@@ -361,99 +388,98 @@ func (rf *Raft)Vote() {
 	}
 }
 type AppendEntries struct {
-	Id 		int
+	Id 			int
 	Term 		int
 	Prevlogi	int
 	Prevlogt	int
 	Leadercmit	int
-	Lostsofent	[]entrry//如果需要大量传enttry的话，启用
+	Entries 	[]entrry//如果需要大量传enttry的话，启用
 }
 type Appendreply struct {
 	Nextindex 	int
 	Baseterm 	int
 	CurTerm 	int
 	ReqTerm		int
+	Id  		int
 }
 func (rf *Raft)AppendEntries(request AppendEntries,reply *Appendreply){
-	//t1:=time.Now()  	//用来查看goroutine的执行时间
-	//defer  func() {
-	//	t2:=time.Now()
-	//	fmt.Println(t2.Sub(t1),"append")
-	//}()
-	if rf.killed() {
+	if rf.Killed() {
 		return
 	}
 	rf.mu.Lock()
 	if request.Term<rf.term{
-		//fmt.Println("t0")
+
 		reply.CurTerm=rf.term
 		reply.Nextindex=1
 		reply.ReqTerm=request.Term
+		reply.Id=rf.voteFor
 		rf.mu.Unlock()
 		return
 	}else {
-		if len(rf.log)>request.Prevlogi {
+		if len(rf.Log)>request.Prevlogi {
 			//fmt.Println("t1")
-			if request.Prevlogt<rf.log[request.Prevlogi].Term{
+			if request.Prevlogt<rf.Log[request.Prevlogi].Term{
 				//fmt.Println("t2")
 				for j:=request.Prevlogi-1;j>=0;j--{
-					if rf.log[j].Term<=request.Prevlogt {
+					if rf.Log[j].Term<=request.Prevlogt {
 						reply.Nextindex=j+1
 						break
 					}
 				}
-			}else if request.Prevlogt>rf.log[request.Prevlogi].Term {
+			}else if request.Prevlogt>rf.Log[request.Prevlogi].Term {
 				//fmt.Println("t3")
-				reply.Baseterm=rf.log[request.Prevlogi].Term
+				reply.Baseterm=rf.Log[request.Prevlogi].Term
 				reply.Nextindex=1
 			}else{
 				//fmt.Println("t4")
-				if request.Lostsofent==nil{
+				if request.Entries==nil{
 					reply.Nextindex=request.Prevlogi+1
 				}else {
-					if len(rf.log)-1-request.Prevlogi> len(request.Lostsofent){
+					if len(rf.Log)-1-request.Prevlogi> len(request.Entries){
 						//如果接受者的log中在一致后的剩余长度比appendentries中的log要长，就进行鉴定，
 						//否则万一是延迟过期的append，就可能把已完成的log给截断
-						for index:=0;index< len(request.Lostsofent);index++{
+						for index:=0;index< len(request.Entries);index++{
 							//一个一个鉴定，如果有不同，则直接截断更新（判断后截取）
-							if request.Lostsofent[index].Term!=rf.log[request.Prevlogi+1+index].Term {
-								rf.log=rf.log[:request.Prevlogi+1+index]
-								for t:=index;t< len(request.Lostsofent);t++{
-									rf.log=append(rf.log,request.Lostsofent[t])
+							if request.Entries[index].Term!=rf.Log[request.Prevlogi+1+index].Term {
+								rf.Log =rf.Log[:request.Prevlogi+1+index]
+								for t:=index;t< len(request.Entries);t++{
+									rf.Log =append(rf.Log,request.Entries[t])
 								}
 								rf.persist()
 								break
 							}
 						}
 					}else {
-						rf.log=rf.log[:request.Prevlogi+1]	//直接截断
-						for t:=0;t< len(request.Lostsofent);t++{
-							rf.log=append(rf.log,request.Lostsofent[t])
+						rf.Log =rf.Log[:request.Prevlogi+1] //直接截断
+						for t:=0;t< len(request.Entries);t++{
+							rf.Log =append(rf.Log,request.Entries[t])
 						}
 						rf.persist()
 					}
-					reply.Nextindex=request.Prevlogi+ len(request.Lostsofent)+1
-					//因为保证了log中从0到lostsofent末尾所对应的index的entry是一致的
+					reply.Nextindex=request.Prevlogi+ len(request.Entries)+1
+					//因为保证了log中从0到Entries末尾所对应的index的entry是一致的
 					// 所以用共同的的Nextindex
 				}
 			}
 		}else{
-			reply.Nextindex= len(rf.log)
+			reply.Nextindex= len(rf.Log)
 		}
-		if request.Leadercmit>rf.commitindex&&reply.Nextindex>request.Prevlogi&&reply.Nextindex-1>=request.Leadercmit{
-			for i:=rf.commitindex+1;i<=request.Leadercmit;i++{
-				msg:=ApplyMsg{
-					CommandIndex: i,
-					Command: rf.log[i].Command,
-					CommandValid: true,
+		if request.Leadercmit>rf.Commitindex &&reply.Nextindex>request.Prevlogi&&reply.Nextindex-1>=request.Leadercmit{
+			for i:=rf.Commitindex +1;i<=request.Leadercmit;i++{
+				if rf.Log[i].Command!="1000000000000dsafsdf" {
+					msg:=ApplyMsg{
+						CommandIndex: i,
+						Command: rf.Log[i].Command,
+						CommandValid: true,
+					}
+					rf.applyCh<-msg
 				}
-				rf.applyCh<-msg
 			}
-			rf.commitindex=request.Leadercmit
+			rf.Commitindex =request.Leadercmit
 		}
 		rf.term=request.Term
-		rf.ident=follower
-		rf.voteFor=true
+		rf.Identity =follower
+		rf.voteFor=request.Id
 		reply.ReqTerm=request.Term
 		fl:=bcflld{request.Term}
 		rf.persist()
@@ -464,18 +490,17 @@ func (rf *Raft)AppendEntries(request AppendEntries,reply *Appendreply){
 }
 func  (rf *Raft)AE (i int) {
 	rf.mu.Lock()
-	if rf.ident!=leader||rf.killed(){
+	if rf.Identity !=leader||rf.Killed(){
 		rf.mu.Unlock()
 		return
 	}
-	term0:=rf.term
+	term0:=rf.term	//方法执行时leader的term，如果rpc返回之后的term发生改变，则return
 	var ok 			bool
 	var nexti 		int
 	var request 	AppendEntries
 	var reply	 	Appendreply
 	var newnext		int
-
-	if rf.lastapplied[i]>=0{		//两种情况，一个已经达成一致，一个还在找一致的entry。
+	if rf.lastapplied[i]>=0{
 		nexti=rf.lastapplied[i]+1
 	}else {
 		nexti=rf.nextindex[i]
@@ -483,17 +508,17 @@ func  (rf *Raft)AE (i int) {
 	request=AppendEntries{
 		Id: 		rf.me,
 		Term: 		rf.term,
-		Leadercmit: rf.commitindex,
+		Leadercmit: rf.Commitindex,
 		Prevlogi: 	nexti-1,
-		Prevlogt: 	rf.log[nexti-1].Term,
-		Lostsofent: nil,
+		Prevlogt: 	rf.Log[nexti-1].Term,
+		Entries: nil,
 	}
-	if rf.lastapplied[i]!=-1&&nexti< len(rf.log){	//否则传的lostsofent为nil
-		var m  int		//m是lostsofent中index最大的log 对应在rf.log的entry的index
+	if rf.lastapplied[i]!=-1&&nexti< len(rf.Log){ //否则传的Entries为nil
+		var m  int		//m是Entries中index最大的log 对应在rf.log的entry的index
 		//如果是已经和follower达成之前的（index小的）日志一致，那么就一次全传过去;否则寻找一致的时候，只传一个entry
-		m= int(math.Min(float64(nexti+200), float64(len(rf.log)-1))) //最多传200个
+		m= int(math.Min(float64(nexti+200), float64(len(rf.Log)-1))) //最多传200个
 		for k:=nexti;k<=m;k++{
-			request.Lostsofent=append(request.Lostsofent,rf.log[k])
+			request.Entries=append(request.Entries,rf.Log[k])
 		}
 	}
 	rf.mu.Unlock()
@@ -511,21 +536,21 @@ func  (rf *Raft)AE (i int) {
 
 	if reply.CurTerm>rf.term{
 		rf.term=reply.CurTerm
-		rf.voteFor=true
-		rf.ident=follower
+		rf.voteFor=reply.Id
+		rf.Identity =follower
 		rf.persist()
 		rf.mu.Unlock()
 		rf.bcfollower<-bcflld{reply.CurTerm}
 		return
 	}
-	if rf.ident!=leader||rf.term!=term0||rf.killed(){
+	if rf.Identity !=leader||rf.term!=term0||rf.Killed(){
 		rf.mu.Unlock()
 		return
 	}
 	if reply.ReqTerm==request.Term&&reply.CurTerm==rf.term {		//用newnext进行对两种情况的整合
 		if reply.Baseterm>0 {
 			for d:=request.Prevlogi-1;d>=0;d-- {
-				if rf.log[d].Term<=reply.Baseterm {	// runtime error: index out of range [214] with length 169
+				if rf.Log[d].Term<=reply.Baseterm {
 					newnext=d+1
 					break
 				}
@@ -553,7 +578,7 @@ func  (rf *Raft)AE (i int) {
 	}
 	rf.mu.Unlock()
 	if t2.Sub(t1)>200*time.Millisecond{		//超时重传
-		if len(rf.sendch)<30{
+		if len(rf.sendch)<10{
 			rf.sendch<-true
 		}
 	}
@@ -565,33 +590,31 @@ func (rf *Raft)Worker()  {
 	for {
 		rf.mu.Lock()
 		n:=len(rf.peers)
-		if rf.killed(){
+		if rf.Killed(){
 			rf.mu.Unlock()
 			return
 		}
-		if rf.ident==leader {
-			apply:=make([]int,len(rf.peers))
-			rf.lastapplied[rf.me]=len(rf.log)-1
+		//接下来分三种身份，leader，candidate和follower，只能选择一种。
+		if rf.Identity ==leader {
+			apply:=make([]int,len(rf.peers))	//为了排序
+			rf.lastapplied[rf.me]=len(rf.Log)-1
 			copy(apply,rf.lastapplied)
 			sort.Ints(apply)
-			max:=apply[(n-1)/2]		//max为大多数中最小的log提交高度
-			if max>rf.commitindex&&rf.log[max].Term==rf.term{
-				for i:=rf.commitindex+1;i<=max;i++{
-					msg:=ApplyMsg{
-						CommandValid:true,
-						Command: rf.log[i].Command,
-						CommandIndex: i,
+			max:=apply[(n-1)/2]		//max为大多数中最小的log提交高度(index)
+			if max>rf.Commitindex &&rf.Log[max].Term==rf.term{
+				for i:=rf.Commitindex +1;i<=max;i++{
+					if rf.Log[i].Command!="1000000000000dsafsdf" {
+						msg:=ApplyMsg{
+							CommandIndex: i,
+							Command: rf.Log[i].Command,
+							CommandValid: true,
+						}
+						rf.applyCh<-msg
 					}
-					rf.applyCh<-msg
 				}
-				rf.commitindex=max
+				rf.Commitindex =max
 				rf.persist()
 			}
-			//for i:=0;i<n ;i++ {
-			//	fmt.Println(rf.nextindex[i], "nextindex........",i)
-			//	fmt.Println(rf.lastapplied[i], "lastapplied......",i)
-			//}
-			//fmt.Println()
 			rf.mu.Unlock()
 			for i:=0;i<n ;i++ {
 				if i==me{
@@ -601,7 +624,7 @@ func (rf *Raft)Worker()  {
 			}
 			select {
 			case <-rf.bcfollower:
-			case <-time.After(120*time.Millisecond):
+			case <-time.After(140*time.Millisecond):
 			case <-rf.sendch:	//加速模式，两种情况：1.收到新entry了。2.发送rpc超时了。3.收到过期的bcflld
 				time.Sleep(50*time.Millisecond)		//稍等一下，要不然在one很多次的情况下，太快会产生大量无意义的较短append
 				if len(rf.sendch)>5{
@@ -610,32 +633,32 @@ func (rf *Raft)Worker()  {
 					}
 				}
 			}
-		} else if rf.ident==candidate{
+		} else if rf.Identity ==candidate{
 			term2:=rf.term
 			go rf.Vote()
-			for  !rf.killed()&&rf.ident==candidate&&rf.term==term2{	//除了leader以外，candidate和follower设置了for循环。
+			for  !rf.Killed()&&rf.Identity ==candidate&&rf.term==term2{ //除了leader以外，candidate和follower设置了for循环。
 				rf.mu.Unlock()										//因为在select中break没法跳出for，
 				select {											//所以for来检测raft中的状态达到和内层for的共享
 				case <-time.After((time.Duration(rand.Int63()%10*40+200))*time.Millisecond):
 					rf.mu.Lock()
-					if rf.ident==candidate&&!rf.killed(){
+					if rf.Identity ==candidate&&!rf.Killed(){
 						rf.term++
-						rf.voteFor=true
+						rf.voteFor=rf.me
 						rf.persist()
 					}
 				case <-rf.bcfollower:
 					rf.mu.Lock()
 				case bc2:=<-rf.bcleader:
 					rf.mu.Lock()
-					if rf.ident==candidate&&rf.term==bc2.term&&term2==bc2.term&&!rf.killed(){
-						rf.voteFor=true
-						rf.ident=leader
+					if rf.Identity ==candidate&&rf.term==bc2.term&&term2==bc2.term&&!rf.Killed(){
+						rf.voteFor=rf.me
+						rf.Identity =leader
 						rf.persist()
 						rf.lastapplied=nil
 						rf.nextindex=nil
 						for i:=0;i<n;i++{
 							rf.lastapplied=append(rf.lastapplied,-1)
-							rf.nextindex= append(rf.nextindex,len(rf.log))
+							rf.nextindex= append(rf.nextindex,len(rf.Log))
 						}
 					}
 				}
@@ -643,15 +666,17 @@ func (rf *Raft)Worker()  {
 			rf.mu.Unlock()		//别忘了跳出后要解锁
 		}else {
 			term3:=rf.term
-			for !rf.killed()&&rf.ident==follower&&rf.term==term3 {
+			for !rf.Killed()&&rf.Identity ==follower&&rf.term==term3 {
 				rf.mu.Unlock()
 				select {
-				case <-time.After((time.Duration(rand.Int63()%15*60+500))*time.Millisecond):
+				case <-time.After((time.Duration(rand.Int63()%15*60+300))*time.Millisecond):
+					//fmt.Println("followerlock")	//这两个print帮了我很大的忙
 					rf.mu.Lock()
-					if !rf.killed()&&rf.ident==follower{
+					//fmt.Println("follUN")
+					if !rf.Killed()&&rf.Identity ==follower{
 						rf.term++
-						rf.voteFor=true
-						rf.ident=candidate
+						rf.voteFor=rf.me
+						rf.Identity =candidate
 						rf.persist()
 					}
 				case <-rf.bcfollower:
@@ -662,7 +687,7 @@ func (rf *Raft)Worker()  {
 		}
 	}
 }
-//
+
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -672,7 +697,7 @@ func (rf *Raft)Worker()  {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-//
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -680,18 +705,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.bcleader=make(chan bcflld)
 	rf.peers = peers
 	rf.persister = persister
-	rf.voteFor=false
+	rf.voteFor=nilVote
 	rf.me = me
-	rf.ident=follower
+	rf.Identity =follower
 	rf.sendch=make(chan bool,100)
 	rf.applyCh=applyCh
-	rf.commitindex=0
-	rf.readPersist(persister.ReadRaftState())	// initialize from state persisted before a crash
-	if rf.log==nil{
-		rf.log= append(rf.log, entrry{0,nil})
+	rf.Commitindex =0
+	rf.readPersist(persister.ReadRaftState())
+	if rf.Log ==nil{
+		rf.Log = append(rf.Log, entrry{0,nil})
 	}
 	go rf.Worker()
-	
-
 	return rf
 }
