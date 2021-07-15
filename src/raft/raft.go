@@ -251,7 +251,6 @@ type RequestVoteReply struct {
 	Termcurrent 	int
 	Granted			bool
 	Requestterm     int
-
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
@@ -311,10 +310,11 @@ func (rf *Raft)Vote() {
 		rf.mu.Unlock()
 		return
 	}
-	n:=len(rf.peers)
-	me:=rf.me
+
 	//对数据进行拷贝，每个子函数生成RequestVoteArgs结构时，
 	//不用对raft加锁并调用其数据
+	n:=len(rf.peers)
+	me:=rf.me
 	term1:=rf.term
 	lastlogi:=len(rf.Log)-1
 	lastlogt:=rf.Log[lastlogi].Term
@@ -384,7 +384,7 @@ func (rf *Raft)Vote() {
 				}
 				return
 			}
-		case <-time.After(30*time.Millisecond):
+		case <-time.After(50*time.Millisecond):
 			return
 		}
 	}
@@ -589,8 +589,8 @@ func  (rf *Raft)AE (i int) {
 
 func (rf *Raft)Worker()  {
 	me:=rf.me
+	rand.Seed(time.Now().UnixNano())//随机值
 	for {
-		rand.Seed(time.Now().UnixNano())//随机值
 		rf.mu.Lock()
 		n:=len(rf.peers)
 		if rf.Killed(){
@@ -642,7 +642,7 @@ func (rf *Raft)Worker()  {
 			term2:=rf.term
 			go rf.Vote()
 			for  !rf.Killed()&&rf.Identity ==candidate&&rf.term==term2{
-				rand.Seed(time.Now().UnixNano())
+
 				//除了leader以外，candidate和follower设置了for循环。
 				//因为在select中break没法跳出for，
 				//所以for来检测raft中的状态达到和内层for的共享
@@ -676,7 +676,6 @@ func (rf *Raft)Worker()  {
 		}else {
 			term3:=rf.term
 			for !rf.Killed()&&rf.Identity ==follower&&rf.term==term3 {
-				rand.Seed(time.Now().UnixNano())
 				rf.mu.Unlock()
 				select {
 				case <-time.After((time.Duration(rand.Int63()%15*60+300))*time.Millisecond):
