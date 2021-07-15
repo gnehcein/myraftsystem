@@ -61,8 +61,8 @@ type bcflld struct {
 type Raft struct {
 	mu          	sync.Mutex
 	peers       	[]*labrpc.ClientEnd // 各个节点的rpc-client
-	persister   	*Persister          // Object to hold this peer's persisted state
-	me          	int                 // this peer's index into peers[]
+	persister   	*Persister          // 持久化状态
+	me          	int                 // 此几点在peers数组中的index
 	dead        	int32               // set by Kill()
 	term        	int
 	voteFor       	int
@@ -77,13 +77,12 @@ type Raft struct {
 	applyCh       	chan ApplyMsg		//向状态机传递已经被大多数节点保存的稳定entry
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+//return currentTerm and whether this server
+//believes it is the leader.
 
 func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
-	//fmt.Println("getstate")
 	rf.mu.Lock()
 	term=rf.term
 	isleader= rf.Identity ==leader
@@ -114,7 +113,6 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	err1:=d.Decode(&rf.Log)
@@ -164,9 +162,9 @@ func (rf *Raft) readPersist(data []byte) {
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
 //
+
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-
 }
 
 func (rf *Raft) Killed() bool {
@@ -187,6 +185,7 @@ func (rf *Raft) Killed() bool {
 // term. the third return value is true if this server believes it is
 // the leader.
 //
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
@@ -216,7 +215,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 	}
 	rf.mu.Unlock()
-
 	return index, term, isLeader
 }
 
@@ -237,7 +235,8 @@ type InstallReply struct {
 func (rf Raft)InstallSnapshot(args *InstallArgs,reply *InstallReply)  {
 
 }
-//
+
+// RequestVoteArgs
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
@@ -252,7 +251,7 @@ type RequestVoteReply struct {
 	Termcurrent 	int
 	Granted			bool
 	Requestterm     int
-	Id  			int
+
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
@@ -274,7 +273,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
 			rf.voteFor=args.Candidateid
 			reply.Termcurrent=rf.term
 			rf.persist()
-			rf.mu.Unlock()			//一定要记得先解锁，再传通道，锁和通道是死锁的唯二两个原因，在我写此项目中
+			rf.mu.Unlock()			//一定要记得先解锁，再传通道，锁和通道是死锁的唯二两个原因，在我写此项目中。
 									//因为worker可能有未监听bcfollower通道的时候，处理完操作然后再占有锁才能继续监听bcfollower，
 									//如果恰好这时候被别的goroutine持有锁，并且直到向bcfollower传入消息后才解锁，
 									//这样worker会一直获取不到锁而等待，占有锁的goroutine也会一直卡在无缓冲的channel上，造成死结。
@@ -289,7 +288,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
 	}else {
 		reply.Granted=false
 		reply.Termcurrent=rf.term
-		reply.Id=rf.voteFor
 		rf.mu.Unlock()
 	}
 
@@ -298,7 +296,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply){
 
 type voteup struct {
 	term 	int
-	id 		int
 }
 
 func (rf *Raft)Vote() {
@@ -315,11 +312,14 @@ func (rf *Raft)Vote() {
 		return
 	}
 	n:=len(rf.peers)
-	me:=rf.me			//对数据进行拷贝，每个子函数生成RequestVoteArgs结构时不用对raft加锁并调用其数据
+	me:=rf.me
+	//对数据进行拷贝，每个子函数生成RequestVoteArgs结构时，
+	//不用对raft加锁并调用其数据
 	term1:=rf.term
 	lastlogi:=len(rf.Log)-1
 	lastlogt:=rf.Log[lastlogi].Term
 	rf.mu.Unlock()
+
 	for i:=0;i<n;i++{
 		if i==me{
 			continue
@@ -337,6 +337,7 @@ func (rf *Raft)Vote() {
 			mu.Unlock()
 			ok := rf.peers[i].Call("Raft.RequestVote", &Votereq, &Voterpl)
 			//fmt.Println("vote",time.Now().Sub(t1),ok)
+
 			mu.Lock()
 			defer mu.Unlock()
 			if !ok||Voterpl.Requestterm!=term1{
@@ -350,7 +351,6 @@ func (rf *Raft)Vote() {
 			if Voterpl.Termcurrent>term1  {
 				up1:=voteup{
 					term: Voterpl.Termcurrent,
-					id: Voterpl.Id,
 				}
 				up<-up1
 				return
@@ -360,6 +360,7 @@ func (rf *Raft)Vote() {
 			}
 		}(i)
 	}
+
 	for {
 		select {
 		case newterm:=<-up:
@@ -367,7 +368,7 @@ func (rf *Raft)Vote() {
 			if newterm.term>rf.term{
 				rf.term=newterm.term
 				rf.Identity =follower
-				rf.voteFor=newterm.id
+				rf.voteFor=nilVote
 				rf.persist()
 			}
 			rf.mu.Unlock()
@@ -377,7 +378,8 @@ func (rf *Raft)Vote() {
 			votenum++
 			if votenum>=n/2{
 				select {
-				case <-time.After(5*time.Millisecond):		//因为不知道worker的状态，可能不是candidate了，就没有bcleader通道
+				case <-time.After(5*time.Millisecond):
+				//因为不知道worker的状态，可能不是candidate了，就没有bcleader通道
 				case rf.bcleader<- bcflld{term1}:
 				}
 				return
@@ -395,98 +397,94 @@ type AppendEntries struct {
 	Leadercmit	int
 	Entries 	[]entrry//如果需要大量传enttry的话，启用
 }
-type Appendreply struct {
+
+type AppendReply struct {
 	Nextindex 	int
 	Baseterm 	int
 	CurTerm 	int
 	ReqTerm		int
-	Id  		int
 }
-func (rf *Raft)AppendEntries(request AppendEntries,reply *Appendreply){
+
+func (rf *Raft)AppendEntries(request AppendEntries,reply *AppendReply){
 	if rf.Killed() {
 		return
 	}
 	rf.mu.Lock()
 	if request.Term<rf.term{
-
 		reply.CurTerm=rf.term
 		reply.Nextindex=1
 		reply.ReqTerm=request.Term
-		reply.Id=rf.voteFor
 		rf.mu.Unlock()
 		return
-	}else {
-		if len(rf.Log)>request.Prevlogi {
-			//fmt.Println("t1")
-			if request.Prevlogt<rf.Log[request.Prevlogi].Term{
-				//fmt.Println("t2")
-				for j:=request.Prevlogi-1;j>=0;j--{
-					if rf.Log[j].Term<=request.Prevlogt {
-						reply.Nextindex=j+1
-						break
-					}
-				}
-			}else if request.Prevlogt>rf.Log[request.Prevlogi].Term {
-				//fmt.Println("t3")
-				reply.Baseterm=rf.Log[request.Prevlogi].Term
-				reply.Nextindex=1
-			}else{
-				//fmt.Println("t4")
-				if request.Entries==nil{
-					reply.Nextindex=request.Prevlogi+1
-				}else {
-					if len(rf.Log)-1-request.Prevlogi> len(request.Entries){
-						//如果接受者的log中在一致后的剩余长度比appendentries中的log要长，就进行鉴定，
-						//否则万一是延迟过期的append，就可能把已完成的log给截断
-						for index:=0;index< len(request.Entries);index++{
-							//一个一个鉴定，如果有不同，则直接截断更新（判断后截取）
-							if request.Entries[index].Term!=rf.Log[request.Prevlogi+1+index].Term {
-								rf.Log =rf.Log[:request.Prevlogi+1+index]
-								for t:=index;t< len(request.Entries);t++{
-									rf.Log =append(rf.Log,request.Entries[t])
-								}
-								rf.persist()
-								break
-							}
-						}
-					}else {
-						rf.Log =rf.Log[:request.Prevlogi+1] //直接截断
-						for t:=0;t< len(request.Entries);t++{
-							rf.Log =append(rf.Log,request.Entries[t])
-						}
-						rf.persist()
-					}
-					reply.Nextindex=request.Prevlogi+ len(request.Entries)+1
-					//因为保证了log中从0到Entries末尾所对应的index的entry是一致的
-					// 所以用共同的的Nextindex
-				}
-			}
-		}else{
-			reply.Nextindex= len(rf.Log)
-		}
-		if request.Leadercmit>rf.Commitindex &&reply.Nextindex>request.Prevlogi&&reply.Nextindex-1>=request.Leadercmit{
-			for i:=rf.Commitindex +1;i<=request.Leadercmit;i++{
-				if rf.Log[i].Command!="1000000000000dsafsdf" {
-					msg:=ApplyMsg{
-						CommandIndex: i,
-						Command: rf.Log[i].Command,
-						CommandValid: true,
-					}
-					rf.applyCh<-msg
-				}
-			}
-			rf.Commitindex =request.Leadercmit
-		}
-		rf.term=request.Term
-		rf.Identity =follower
-		rf.voteFor=request.Id
-		reply.ReqTerm=request.Term
-		fl:=bcflld{request.Term}
-		rf.persist()
-		rf.mu.Unlock()
-		rf.bcfollower<-fl
-		reply.CurTerm=request.Term
 	}
+	if len(rf.Log)>request.Prevlogi {
+		if request.Prevlogt<rf.Log[request.Prevlogi].Term{
+			for j:=request.Prevlogi-1;j>=0;j--{
+				if rf.Log[j].Term<=request.Prevlogt {
+					reply.Nextindex=j+1
+					break
+				}
+			}
+		}else if request.Prevlogt>rf.Log[request.Prevlogi].Term {
+			reply.Baseterm=rf.Log[request.Prevlogi].Term
+			reply.Nextindex=1
+		}else{
+			if request.Entries==nil{
+				reply.Nextindex=request.Prevlogi+1
+			}else {
+				if len(rf.Log)-1-request.Prevlogi> len(request.Entries){
+					//如果接受者的log中在一致后的剩余长度比appendentries中的log要长，就进行鉴定，
+					//否则万一是延迟过期的append，就可能把已完成的log给截断
+					for index:=0;index< len(request.Entries);index++{
+						//一个一个鉴定，如果有不同，则直接截断更新（判断后截取）
+						if request.Entries[index].Term!=rf.Log[request.Prevlogi+1+index].Term {
+							rf.Log =rf.Log[:request.Prevlogi+1+index]
+							for t:=index;t< len(request.Entries);t++{
+								rf.Log =append(rf.Log,request.Entries[t])
+							}
+							rf.persist()
+							break
+						}
+					}
+				}else {
+					rf.Log =rf.Log[:request.Prevlogi+1] //直接截断
+					for t:=0;t< len(request.Entries);t++{
+						rf.Log =append(rf.Log,request.Entries[t])
+					}
+					rf.persist()
+				}
+				reply.Nextindex=request.Prevlogi+ len(request.Entries)+1
+				//因为保证了log中从0到Entries末尾所对应的index的entry是一致的
+				// 所以用共同的的Nextindex
+			}
+		}
+	}else{
+		reply.Nextindex= len(rf.Log)
+	}
+	if request.Leadercmit>rf.Commitindex &&reply.Nextindex>request.Prevlogi&&
+		reply.Nextindex-1>=request.Leadercmit{
+		for i:=rf.Commitindex +1;i<=request.Leadercmit;i++{
+			if rf.Log[i].Command!="nil" {
+				msg:=ApplyMsg{
+					CommandIndex: i,
+					Command: rf.Log[i].Command,
+					CommandValid: true,
+				}
+				rf.applyCh<-msg
+			}
+		}
+		rf.Commitindex =request.Leadercmit
+	}
+	rf.term=request.Term
+	rf.Identity =follower
+	rf.voteFor=request.Id
+	reply.ReqTerm=request.Term
+	fl:=bcflld{request.Term}
+	rf.persist()
+	rf.mu.Unlock()
+	rf.bcfollower<-fl
+	reply.CurTerm=request.Term
+
 }
 func  (rf *Raft)AE (i int) {
 	rf.mu.Lock()
@@ -498,7 +496,7 @@ func  (rf *Raft)AE (i int) {
 	var ok 			bool
 	var nexti 		int
 	var request 	AppendEntries
-	var reply	 	Appendreply
+	var reply	 	AppendReply
 	var newnext		int
 	if rf.lastapplied[i]>=0{
 		nexti=rf.lastapplied[i]+1
@@ -513,10 +511,12 @@ func  (rf *Raft)AE (i int) {
 		Prevlogt: 	rf.Log[nexti-1].Term,
 		Entries: nil,
 	}
+
 	if rf.lastapplied[i]!=-1&&nexti< len(rf.Log){ //否则传的Entries为nil
 		var m  int		//m是Entries中index最大的log 对应在rf.log的entry的index
-		//如果是已经和follower达成之前的（index小的）日志一致，那么就一次全传过去;否则寻找一致的时候，只传一个entry
-		m= int(math.Min(float64(nexti+200), float64(len(rf.Log)-1))) //最多传200个
+		//如果是已经和follower达成之前的（index小的）日志一致，那么就一次全传过去;
+		//否则寻找一致的时候，只传空的log切片
+		m= int(math.Min(float64(nexti+50), float64(len(rf.Log)-1))) //最多传200个
 		for k:=nexti;k<=m;k++{
 			request.Entries=append(request.Entries,rf.Log[k])
 		}
@@ -524,21 +524,20 @@ func  (rf *Raft)AE (i int) {
 	rf.mu.Unlock()
 	t1:=time.Now()
 	ok=rf.peers[i].Call("Raft.AppendEntries",request,&reply)
+
 	t2:=time.Now()
 	if t2.Sub(t1)>1*time.Second||!ok {
-		if len(rf.sendch)<30{
+		if len(rf.sendch)<10{
 			rf.sendch<-true		//超时重传
 		}
 		return
 	}
-	//fmt.Println("rpctime",t2.Sub(t1),ok,i)
 	rf.mu.Lock()
-
 	if reply.CurTerm>rf.term{
 		rf.term=reply.CurTerm
-		rf.voteFor=reply.Id
 		rf.Identity =follower
 		rf.persist()
+		rf.voteFor=nilVote
 		rf.mu.Unlock()
 		rf.bcfollower<-bcflld{reply.CurTerm}
 		return
@@ -547,7 +546,8 @@ func  (rf *Raft)AE (i int) {
 		rf.mu.Unlock()
 		return
 	}
-	if reply.ReqTerm==request.Term&&reply.CurTerm==rf.term {		//用newnext进行对两种情况的整合
+	if reply.ReqTerm==request.Term {
+		//用newnext进行对两种情况的整合
 		if reply.Baseterm>0 {
 			for d:=request.Prevlogi-1;d>=0;d-- {
 				if rf.Log[d].Term<=reply.Baseterm {
@@ -558,7 +558,8 @@ func  (rf *Raft)AE (i int) {
 		}else {
 			newnext=reply.Nextindex
 		}
-		if newnext>rf.lastapplied[i] {	//如果newnext<rf.lastapplied[i]，说明是延迟的rpc，忽略
+		if newnext>rf.lastapplied[i] {
+			//如果newnext<rf.lastapplied[i]，说明是延迟的rpc，忽略
 			if rf.lastapplied[i]<0{
 				if newnext<=rf.nextindex[i]{
 					if newnext>request.Prevlogi {
@@ -566,8 +567,10 @@ func  (rf *Raft)AE (i int) {
 					}
 					rf.nextindex[i]=newnext
 				}
-				//在未同步情况下，即rf.lastapplied[i]<0，如果这次达成同步了，newnext就等于rf.nextindext[i]，
-				//否则newnext小于rf.nextindext[i]。所以本次rpc的newnext一定<=rf.nextindext[i]，如果>，则为延迟rpc
+				//在未同步情况下，即rf.lastapplied[i]<0，如果这次达成同步了，
+				//newnext就等于rf.nextindext[i]，
+				//否则newnext小于rf.nextindext[i]。
+				//所以本次rpc的newnext一定<=rf.nextindext[i]，如果>，则为延迟rpc
 			}else {
 				if request.Prevlogi==rf.lastapplied[i] {
 					rf.lastapplied[i]=newnext-1
@@ -586,8 +589,8 @@ func  (rf *Raft)AE (i int) {
 
 func (rf *Raft)Worker()  {
 	me:=rf.me
-	rand.Seed(time.Now().UnixNano())//随机值
 	for {
+		rand.Seed(time.Now().UnixNano())//随机值
 		rf.mu.Lock()
 		n:=len(rf.peers)
 		if rf.Killed(){
@@ -603,7 +606,7 @@ func (rf *Raft)Worker()  {
 			max:=apply[(n-1)/2]		//max为大多数中最小的log提交高度(index)
 			if max>rf.Commitindex &&rf.Log[max].Term==rf.term{
 				for i:=rf.Commitindex +1;i<=max;i++{
-					if rf.Log[i].Command!="1000000000000dsafsdf" {
+					if rf.Log[i].Command!="nil" {
 						msg:=ApplyMsg{
 							CommandIndex: i,
 							Command: rf.Log[i].Command,
@@ -625,8 +628,10 @@ func (rf *Raft)Worker()  {
 			select {
 			case <-rf.bcfollower:
 			case <-time.After(140*time.Millisecond):
-			case <-rf.sendch:	//加速模式，两种情况：1.收到新entry了。2.发送rpc超时了。3.收到过期的bcflld
-				time.Sleep(50*time.Millisecond)		//稍等一下，要不然在one很多次的情况下，太快会产生大量无意义的较短append
+			case <-rf.sendch:	//加速模式，两种情况：1.收到新entry了。
+			// 2.发送rpc超时了。3.收到过期的bcflld
+				time.Sleep(50*time.Millisecond)
+				//稍等一下，要不然在one很多次的情况下，太快会产生大量无意义的较短append
 				if len(rf.sendch)>5{
 					for i:=0;i<5;i++{
 						<-rf.sendch
@@ -636,9 +641,13 @@ func (rf *Raft)Worker()  {
 		} else if rf.Identity ==candidate{
 			term2:=rf.term
 			go rf.Vote()
-			for  !rf.Killed()&&rf.Identity ==candidate&&rf.term==term2{ //除了leader以外，candidate和follower设置了for循环。
-				rf.mu.Unlock()										//因为在select中break没法跳出for，
-				select {											//所以for来检测raft中的状态达到和内层for的共享
+			for  !rf.Killed()&&rf.Identity ==candidate&&rf.term==term2{
+				rand.Seed(time.Now().UnixNano())
+				//除了leader以外，candidate和follower设置了for循环。
+				//因为在select中break没法跳出for，
+				//所以for来检测raft中的状态达到和内层for的共享
+				rf.mu.Unlock()
+				select {
 				case <-time.After((time.Duration(rand.Int63()%10*40+200))*time.Millisecond):
 					rf.mu.Lock()
 					if rf.Identity ==candidate&&!rf.Killed(){
@@ -667,6 +676,7 @@ func (rf *Raft)Worker()  {
 		}else {
 			term3:=rf.term
 			for !rf.Killed()&&rf.Identity ==follower&&rf.term==term3 {
+				rand.Seed(time.Now().UnixNano())
 				rf.mu.Unlock()
 				select {
 				case <-time.After((time.Duration(rand.Int63()%15*60+300))*time.Millisecond):
